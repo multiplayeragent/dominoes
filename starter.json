@@ -1,0 +1,21 @@
+{
+  "name": "Dominoes",
+  "genre": "board",
+  "dim": "2D",
+  "mode": "Turn-based",
+  "players": "2–4",
+  "hook": "Match the ends. Empty your hand. First to 100.",
+  "how": "Play a tile that matches a number at either end of the line; no match, draw from the boneyard. Empty your hand to win the round and score every pip left in the other hands. First to 100 points wins.",
+  "controls": "Click or tap a tile to play it (tap an end if it fits both), tap the boneyard to draw",
+  "uses": [
+    ["Hidden info", "Your hand is sealed so only you can read it (the host deals, so it can too)."],
+    ["Host-run rules", "The host's browser shuffles, deals and checks every tile; if it leaves, the next player takes over."],
+    ["Bots", "Bots fill empty seats and take over for anyone who leaves."],
+    ["Leaderboard", "Points won, added up over every round, shown after each round."]
+  ],
+  "ideas": [
+    "Score only rounds that end on a multiple of five",
+    "Use a double-nine set for bigger games",
+    "Make the tiles glow like neon on a dark table"
+  ]
+}

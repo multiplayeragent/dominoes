@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dominoes</title>
+<style>
+  :root { --ink: #fff8ec; --gold: #ffd166; --panel: #1d3a2c; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #0f2a1f; }
+  body { color: var(--ink); font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+  #table { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #safe { position: fixed; visibility: hidden; pointer-events: none; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #status { position: fixed; left: 50%; transform: translateX(-50%); bottom: 160px; width: calc(100vw - 190px); max-width: 520px; text-align: center; pointer-events: none; }
+  #statusText { font-weight: 800; font-size: 18px; text-shadow: 0 2px 6px #000c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sub { font-size: 13px; opacity: .85; min-height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #timer { width: 150px; height: 5px; margin: 4px auto 0; border-radius: 4px; background: #ffffff22; overflow: hidden; }
+  #timer i { display: block; height: 100%; background: var(--gold); transform-origin: left; }
+  #toast { position: fixed; left: 50%; top: 38%; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: #000b; font-weight: 700;
+           pointer-events: none; transition: opacity .4s; white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
+  #net { position: fixed; bottom: max(4px, env(safe-area-inset-bottom)); left: 0; right: 0; text-align: center; font-size: 12px; opacity: .7; pointer-events: none; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #0008; z-index: 30; }
+  #over[hidden], #back[hidden] { display: none; }
+  .box { box-sizing: border-box; width: min(380px, calc(100vw - 32px)); max-height: 88vh; overflow: auto; padding: 18px 20px; border-radius: 18px; background: var(--panel);
+         border: 1px solid #ffffff22; text-align: center; box-shadow: 0 20px 60px #0009; }
+  .box h2 { margin: 0 0 4px; font-size: 26px; } .box p { margin: 0 0 10px; opacity: .85; }
+  .box h3 { margin: 8px 0 4px; font-size: 13px; color: var(--gold); text-align: left; }
+  .box ol { text-align: left; margin: 0 0 10px; padding-left: 24px; font-size: 14px; min-height: 24px; } .box li span { float: right; }
+  .row { display: grid; grid-template-columns: 14px 1fr auto 46px; gap: 8px; align-items: center; text-align: left; font-size: 14px; padding: 4px 0; }
+  .row i { width: 12px; height: 12px; border-radius: 50%; } .row b { text-align: right; } .row small { opacity: .7; }
+  .bar { grid-column: 2 / 5; height: 5px; border-radius: 3px; background: #ffffff1c; overflow: hidden; margin-top: -2px; } .bar u { display: block; height: 100%; background: var(--gold); }
+  button { min-height: 48px; border-radius: 12px; border: 0; font: 800 16px system-ui, sans-serif; cursor: pointer; }
+  .box button { width: 100%; margin-top: 8px; background: var(--gold); color: #2a1d00; }
+  .box button.ghost { background: #ffffff1a; color: #fff; }
+  #back { position: fixed; right: max(12px, env(safe-area-inset-right)); top: calc(max(8px, env(safe-area-inset-top)) + 96px); min-width: 120px; background: var(--gold); color: #2a1d00; z-index: 5; }
+  .hide { display: none !important; }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="table"></canvas>
+<div id="safe"></div>
+<div id="status"><div id="statusText"></div><div id="sub"></div><div id="timer"><i></i></div></div>
+<div id="toast" style="opacity:0"></div>
+<button id="back" hidden>Scores</button>
+<div id="net">Connecting…</div>
+<div id="over" hidden><div class="box">
+  <h2 id="overTitle"></h2><p id="overSub"></p>
+  <div id="scores"></div>
+  <h3>Most points</h3><ol id="board"><li>Loading…</li></ol>
+  <button id="next">Next round</button><button id="look" class="ghost">Look at the table</button>
+</div></div>
+<script>
+/* ═══ DOMINOES · a Multiplayer Agent starter ══════════════════════════════════════════════
+ * Match a number at either end of the line. Can't? Draw from the boneyard. Empty your hand to win
+ * the round and score every pip left in the other hands; first to 100 wins the match.
+ * Turn-based, 2–4 players; bots fill empty seats.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ seats, hand size, target score, timers, the leaderboard
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   SEALED HANDS .. the Seal helper: hands are encrypted so only their owner can read them
+ *   TILES ......... the 28 tiles, what fits where, counting pips
+ *   TABLE (HOST) .. dealing, playing, drawing, passing, scoring, bots, the turn timer, seats,
+ *                   and taking over as a new host. Only the host writes the shared fields.
+ *   MY HAND ....... reading my sealed hand, playing a tile, drawing, re-sending to a new host
+ *   LINE LAYOUT ... where each tile on the table goes: out from the first tile, turning corners
+ *   SCREEN ........ drawing tiles, seats, the boneyard, my hand, flying tiles, confetti, sounds
+ *   HUD & RESULTS . status line, the round-over card, scores and the leaderboard
+ *   INPUT / LOOP .. taps, heartbeat, color fix, the main loop
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - The table lives in shared fields only the HOST writes: `game` (one JSON field: id, v,
+ *     match, ph "play"|"over", host, seats, scores, counts, bone, line, root, turn, starter, t,
+ *     passes, drew, turnAt, turnEnds, last, winner, pts, blocked, matchOver, endsAt, reveal) and
+ *     `hand0`…`hand3` (each human's hand, SEALED to that player's public key, so only they can
+ *     read it; the host deals, so it can too).
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s).
+ *     It holds the boneyard and the bots' hands in its own memory.
+ *   - Each player writes its OWN entity: `n` (name), `c` (color), `pk` (public key), `hb`.
+ *   - Players send intents to the host: "play" {g, t, tile, end}, "draw" {g, t}, "next" {g}.
+ *     `t` counts every action, so an old or double intent is ignored. Passing is automatic.
+ *   - When the host changes, every player re-sends its own hand sealed to the new host
+ *     ("myhand" {to, r, box}). The new host rebuilds the boneyard from the tiles nobody holds,
+ *     minus the line, reshuffles, and deals the bots fresh hands of the same size.
+ *   - Timers are timestamps: turnEnds (then the host plays for you), endsAt (next round).
+ *   - ?attract plays offline with bots (and your hand on autopilot) for the preview video.
+ *   - Leaderboard "points": every point a player wins, added up, shown after every round.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  seats: 4,              // bots fill the table up to this many players (2 to 4)
+  handSize: 7,           // tiles each with 2 players
+  handSizeMany: 5,       // tiles each with 3 or 4 players
+  target: 100,           // first to this many points wins the match
+  turnMs: 25000,         // time to play before the host plays for you
+  botMs: 1000,           // how long a bot thinks
+  passMs: 1100,          // a player with no move and an empty boneyard passes after this long
+  resultsMs: 9000,       // the round-over card shows this long, then the next round deals
+  matchResultsMs: 20000, // the match-over card shows this long, then a new match deals
+  seatGraceMs: 8000,     // a player silent this long hands its seat to a bot
+  rejoinMs: 3000,        // a new host waits this long for everyone to re-send their hands
+  attractMoves: 6,       // ?attract: tiles already on the table when a round starts
+  board: "points",       // leaderboard name
+};
+const BOT_NAMES = ["Domingo", "Pippa", "Spinner", "Bones"];
+const COLORS = ["#ff8a65", "#4fc3f7", "#ffd54f", "#81c784", "#ba68c8", "#f06292", "#4dd0e1", "#aed581"];
+const NAME_A = ["Happy", "Sneaky", "Lucky", "Quick", "Jolly", "Clever"], NAME_B = ["Otter", "Panda", "Fox", "Koala", "Badger", "Moose"];
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'dominoes',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+/** Still in the room and heard from within the seat grace time. */
+const stillHere = (id) => id === net.sessionId || (!!S.entities.players[id] && performance.now() - (seenHb.get(id)?.at ?? -1e9) < CONFIG.seatGraceMs);
+
+// ── SEALED HANDS ────────────────────────────────────────────────────────────────────
+// Everything in room state reaches every client, so a hand is written SEALED: encrypted so only
+// its one reader can open it. Each player publishes a public key in its own entity (`pk`); the
+// host seals each hand to that key and writes the box into shared state.
+//   - The host deals, so the host can read every hand. Fine for friends, not cheat-proof.
+//   - A new host can't open boxes the old host sealed, so every player re-sends its own hand
+//     to the new host (sealed, with mp.send), and the new host rebuilds the boneyard from those.
+//   - crypto.subtle needs https or localhost. Without it seal()/open() pass the value through.
+//   - NEVER plaintext online: with no key for the recipient (a player who just joined and hasn't
+//     published `pk` yet, or one who left), seal() returns "" (an empty box nobody can open).
+//     Only players whose `pk` the host has get a seat; bots have no key, so the host keeps
+//     their hands in its own memory.
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const Seal = {
+  pair: null,
+  pub: "",
+  keys: new Map(), // other player's public key -> derived AES key
+  get on() { return !!(window.crypto && crypto.subtle); },
+  /** Make this player's key pair. Returns the public key to publish: me.set("pk", pub). */
+  async init() {
+    if (!this.on) return "";
+    this.pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+    this.pub = b64(await crypto.subtle.exportKey("raw", this.pair.publicKey));
+    return this.pub;
+  },
+  async key(otherPub) {
+    let k = this.keys.get(otherPub);
+    if (!k) {
+      const theirs = await crypto.subtle.importKey("raw", unb64(otherPub), { name: "ECDH", namedCurve: "P-256" }, false, []);
+      k = await crypto.subtle.deriveKey({ name: "ECDH", public: theirs }, this.pair.privateKey, { name: "AES-GCM", length: 128 }, false, ["encrypt", "decrypt"]);
+      this.keys.set(otherPub, k);
+    }
+    return k;
+  },
+  /** Seal any JSON value so only the holder of `toPub` (and you) can open it. */
+  async seal(toPub, value) {
+    if (!this.on) return "p:" + JSON.stringify(value);
+    if (!toPub || !this.pair) return ""; // never plaintext: nobody can open an empty box
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await this.key(toPub), new TextEncoder().encode(JSON.stringify(value)));
+    return b64(iv) + "." + b64(ct);
+  },
+  /** Open a box sealed by the player whose public key is `fromPub`. Null if it isn't for you. */
+  async open(fromPub, box) {
+    if (typeof box !== "string") return null;
+    if (box.startsWith("p:")) return JSON.parse(box.slice(2));
+    if (!this.on || !fromPub || !this.pair) return null;
+    try {
+      const [iv, ct] = box.split(".").map(unb64);
+      const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await this.key(fromPub), ct);
+      return JSON.parse(new TextDecoder().decode(pt));
+    } catch { return null; }
+  },
+};
+
+// ── TILES ───────────────────────────────────────────────────────────────────────────
+// A tile is [low, high], e.g. [2, 5]. The line on the table is a list of tiles, each turned so
+// its right number touches the next tile's left number: line[0][0] and line[last][1] are the open ends.
+function allTiles() { const out = []; for (let a = 0; a <= 6; a++) for (let b = a; b <= 6; b++) out.push([a, b]); return out; } // 28 tiles
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+const tkey = (t) => Math.min(t[0], t[1]) + "|" + Math.max(t[0], t[1]);
+const same = (x, y) => tkey(x) === tkey(y);
+const pips = (t) => t[0] + t[1];
+const handPips = (h) => h.reduce((s, t) => s + pips(t), 0);
+/** `list` minus the tiles in `tiles`. */
+const without = (list, tiles) => list.filter((t) => !tiles.some((x) => same(x, t)));
+const ends = (g) => (g.line.length ? { L: g.line[0][0], R: g.line[g.line.length - 1][1] } : null);
+/** Every move a hand can make: [{tile, end}]. The first tile of a round can be anything. */
+function movesFor(g, hand) {
+  const e = ends(g), out = [];
+  for (const t of hand) {
+    if (!e) { out.push({ tile: t, end: "R" }); continue; }
+    if (t[0] === e.R || t[1] === e.R) out.push({ tile: t, end: "R" });
+    if ((t[0] === e.L || t[1] === e.L) && e.L !== e.R) out.push({ tile: t, end: "L" });
+  }
+  return out;
+}
+const handSizeFor = (n) => (n <= 2 ? CONFIG.handSize : CONFIG.handSizeMany);
+
+// ── TABLE (HOST) ────────────────────────────────────────────────────────────────────
+// The host's private memory: the boneyard, every hand (bots' too), and actions waiting their turn.
+const host = { last: null, ready: false, since: 0, busy: false, hands: [], bone: [], inbox: [], known: new Map() };
+const gameMemo = { raw: undefined, g: null };
+/** The game as state has it, or the host's own newer write that hasn't come back yet. */
+function game() {
+  if (gameMemo.raw !== S.shared.game) { gameMemo.raw = S.shared.game; gameMemo.g = parse(S.shared.game, null); }
+  const g = gameMemo.g;
+  return host.last && isHost() && (!g || host.last.v > g.v) ? host.last : g;
+}
+function writeGame(g) { g = { ...g, v: (game()?.v ?? 0) + 1 }; host.last = g; net.setShared("game", JSON.stringify(g)); return g; }
+const seatOf = (g, id) => (g ? g.seats.findIndex((s) => s.i === id) : -1);
+const pkOf = (id) => (id === net.sessionId ? Seal.pub : S.entities.players[id]?.pk);
+const canSit = (id) => net.offline || !Seal.on || !!pkOf(id);
+const playerName = (id) => (id === net.sessionId ? myName : S.entities.players[id]?.n || "Player");
+const playerColor = (id) => (id === net.sessionId ? myColor : S.entities.players[id]?.c || "#ccc");
+const seatName = (s) => (s.b ? s.n : playerName(s.i));
+const seatColor = (s) => (s.b ? s.c : playerColor(s.i));
+
+/** Seal one human's hand to them and write it to `hand<i>`. No key, no box: never in the clear. */
+async function sealHand(g, i) {
+  const s = g.seats[i];
+  if (!s || s.b) return;
+  const box = await Seal.seal(pkOf(s.i), host.hands[i]);
+  if (box) net.setShared("hand" + i, JSON.stringify({ id: s.i, r: g.id, by: Seal.pub, box }));
+}
+/** Write an action's result: the changed hands first, then the game. */
+async function commit(g, sealSeats = []) {
+  if (!g) return null;
+  for (const i of new Set(sealSeats)) await sealHand(g, i);
+  return writeGame(g);
+}
+const nextTurn = (g, turn, extra = {}) => ({ ...g, turn, t: g.t + 1, drew: 0, turnAt: Date.now(), turnEnds: Date.now() + CONFIG.turnMs, ...extra });
+
+/** A new round (or a new match after someone reached the target): shuffle, deal, the next player leads. */
+function deal(prev) {
+  const fresh = !prev || prev.matchOver;
+  let seats = prev && !fresh ? prev.seats.slice() : null, scores = prev && !fresh ? prev.scores.slice() : null;
+  if (fresh) {
+    const humans = livePlayers().filter(canSit).slice(0, 4), used = new Set(humans.map(playerColor));
+    seats = humans.map((id) => ({ i: id, n: playerName(id), c: playerColor(id) }));
+    for (let k = 0; seats.length < Math.max(2, Math.min(4, CONFIG.seats)); k++) {
+      const c = COLORS.find((x) => !used.has(x)) || COLORS[k]; used.add(c);
+      seats.push({ i: "bot" + k, n: BOT_NAMES[k], c, b: 1 });
+    }
+    shuffle(seats); scores = seats.map(() => 0);
+  }
+  host.bone = shuffle(allTiles());
+  host.hands = seats.map(() => host.bone.splice(-handSizeFor(seats.length)));
+  host.ready = true;
+  const starter = fresh ? Math.floor(Math.random() * seats.length) : (prev.starter + 1) % seats.length, now = Date.now();
+  let g = { id: (prev?.id ?? 0) + 1, match: fresh ? (prev?.match ?? 0) + 1 : prev.match, ph: "play", host: net.sessionId, seats, scores,
+    counts: host.hands.map((h) => h.length), bone: host.bone.length, line: [], root: 0, turn: starter, starter, t: 0, passes: 0, drew: 0,
+    turnAt: now + 1400, turnEnds: now + 1400 + CONFIG.turnMs, last: null, winner: -1, pts: 0, blocked: false, matchOver: false, endsAt: 0, reveal: null };
+  for (let k = 0; ATTRACT && k < CONFIG.attractMoves && g.ph === "play"; k++) g = botTurn(g, g.turn) || g; // a busier table for the video
+  if (ATTRACT) g = { ...g, turnAt: now + 300 };
+  return commit(g, seats.map((_, i) => i));
+}
+/** The round ends: the winner scores every pip left in the other hands. */
+function endRound(out, winner, blocked) {
+  const pts = winner < 0 ? 0 : host.hands.reduce((s, h, k) => (k === winner ? s : s + handPips(h)), 0);
+  const scores = out.scores.slice(); if (winner >= 0) scores[winner] += pts;
+  const matchOver = winner >= 0 && scores[winner] >= CONFIG.target;
+  return { ...out, ph: "over", winner, pts, blocked, scores, matchOver, reveal: host.hands.map((h) => h.slice()), endsAt: Date.now() + (matchOver ? CONFIG.matchResultsMs : CONFIG.resultsMs) };
+}
+/** Play a tile on an end: it turns to match, an empty hand wins the round. Returns the new game, or null if refused. */
+function playTile(g, i, tile, end) {
+  const hand = host.hands[i], at = hand.findIndex((t) => same(t, tile));
+  if (at < 0 || !movesFor(g, [hand[at]]).some((m) => m.end === end || !g.line.length)) return null;
+  const t = hand[at], line = g.line.slice(), e = ends(g);
+  let root = g.root;
+  if (!e) line.push(t.slice());
+  else if (end === "R") line.push(t[0] === e.R ? [t[0], t[1]] : [t[1], t[0]]);
+  else { line.unshift(t[1] === e.L ? [t[0], t[1]] : [t[1], t[0]]); root++; }
+  hand.splice(at, 1);
+  const placed = end === "L" && e ? line[0] : line[line.length - 1];
+  const out = nextTurn(g, (i + 1) % g.seats.length, { line, root, passes: 0, counts: host.hands.map((h) => h.length), last: { s: i, a: "play", tile: placed, end: e ? end : "R", t: g.t + 1 } });
+  return hand.length ? out : endRound(out, i, false);
+}
+/** No move: take one tile from the boneyard. The turn stays with you. */
+function takeFromBoneyard(g, i) {
+  const t = host.bone.pop();
+  if (!t) return null;
+  host.hands[i].push(t);
+  return { ...g, t: g.t + 1, drew: g.drew + 1, bone: host.bone.length, counts: host.hands.map((h) => h.length), turnAt: Date.now(), turnEnds: Math.max(g.turnEnds, Date.now() + 8000), last: { s: i, a: "draw", t: g.t + 1 } };
+}
+/** No move and nothing to draw: pass. If everyone passes in a row the line is blocked; the lowest hand wins. */
+function passTurn(g, i) {
+  const out = nextTurn(g, (i + 1) % g.seats.length, { passes: g.passes + 1, last: { s: i, a: "pass", t: g.t + 1 } });
+  if (out.passes < g.seats.length) return out;
+  const totals = host.hands.map(handPips), low = Math.min(...totals), lows = totals.filter((x) => x === low).length;
+  return endRound(out, lows === 1 ? totals.indexOf(low) : -1, true); // a tie wins nothing
+}
+/** A bot's move (also played for a human whose turn timer ran out): heavy tiles and doubles first,
+ *  keeping numbers it still holds open. */
+function botTurn(g, i) {
+  const hand = host.hands[i], moves = movesFor(g, hand);
+  if (!moves.length) return g.bone > 0 ? takeFromBoneyard(g, i) : passTurn(g, i);
+  const e = ends(g);
+  const score = (m) => {
+    const open = !e ? m.tile[1] : m.end === "R" ? (m.tile[0] === e.R ? m.tile[1] : m.tile[0]) : (m.tile[1] === e.L ? m.tile[0] : m.tile[1]);
+    const keeps = hand.filter((t) => !same(t, m.tile) && (t[0] === open || t[1] === open)).length;
+    return pips(m.tile) * 1.5 + (m.tile[0] === m.tile[1] ? 5 : 0) + keeps * 2 + Math.random() * 6;
+  };
+  const best = moves.sort((x, y) => score(y) - score(x))[0];
+  return playTile(g, i, best.tile, best.end);
+}
+/** An intent from a player (or the host's own action). Only the player whose turn it is, on this exact `t`. */
+function handle({ type, from, data: d }) {
+  const g = game();
+  if (!g || !d || d.g !== g.id) return;
+  const i = seatOf(g, from);
+  if (type === "next") return g.ph === "over" && i >= 0 ? deal(g) : undefined;
+  if (g.ph !== "play" || i !== g.turn || d.t !== g.t) return;
+  if (type === "play" && Array.isArray(d.tile)) return commit(playTile(g, i, d.tile.map(Number), d.end === "L" ? "L" : "R"), [i]);
+  if (type === "draw" && !movesFor(g, host.hands[i]).length) return commit(takeFromBoneyard(g, i), [i]);
+}
+/** Gone players hand their seat (tiles and score) to a bot; a waiting player takes a bot's seat. */
+function fixSeats(g) {
+  if (ATTRACT) return null;
+  const waiting = livePlayers().filter((id) => canSit(id) && seatOf(g, id) < 0), seats = g.seats.slice(), sealSeats = [];
+  let changed = false;
+  seats.forEach((s, i) => {
+    if (!s.b && !stillHere(s.i)) { seats[i] = { i: `bot-${g.id}-${g.t}-${i}`, n: BOT_NAMES.find((b) => !seats.some((x) => x.n === b)) || "Bot", c: s.c, b: 1 }; changed = true; }
+    else if (s.b && waiting.length) { const id = waiting.shift(); seats[i] = { i: id, n: playerName(id), c: playerColor(id) }; sealSeats.push(i); changed = true; }
+  });
+  return changed ? commit({ ...g, seats }, sealSeats) : null;
+}
+/** Just became host mid-round: collect everyone's re-sent hands, then rebuild the boneyard. */
+function adoptTable(g, now) {
+  if (!g || g.ph !== "play" || (g.host === net.sessionId && host.hands.length === g.seats.length)) { host.ready = true; return; }
+  const mine = seatOf(g, net.sessionId);
+  if (mine >= 0 && myHand.r === g.id) host.known.set(mine, myHand.tiles.slice());
+  const missing = g.seats.some((s, i) => !s.b && stillHere(s.i) && !host.known.has(i));
+  if (missing && now - host.since < CONFIG.rejoinMs) return;
+  const held = g.seats.map((s, i) => { const h = host.known.get(i); return h && h.length === g.counts[i] ? h.slice() : null; });
+  host.bone = shuffle(without(without(allTiles(), held.filter(Boolean).flat()), g.line));
+  host.hands = held.map((h, i) => h || host.bone.splice(-g.counts[i])); // bots (and anyone silent) get fresh tiles
+  host.ready = true; host.known.clear(); host.busy = true;
+  const resealed = g.seats.map((s, i) => (!s.b && !held[i] ? i : -1)).filter((i) => i >= 0);
+  commit({ ...g, host: net.sessionId, bone: host.bone.length, turnAt: Date.now(), turnEnds: Math.max(g.turnEnds, Date.now() + 5000) }, resealed).finally(() => { host.busy = false; });
+}
+function hostTick(now) {
+  if (!host.since) host.since = now;
+  if (host.busy) return;
+  const g = game(), t = Date.now();
+  if (!host.ready) return adoptTable(g, now);
+  const run = (p) => { if (!p) return; host.busy = true; Promise.resolve(p).catch((e) => console.warn(e)).finally(() => { host.busy = false; }); };
+  if (host.inbox.length) return run(handle(host.inbox.shift()));
+  if (!g) return run(deal(null));
+  if (g.ph === "over") { if (t > g.endsAt) run(deal(g)); return; }
+  const seatChange = fixSeats(g);
+  if (seatChange) return run(seatChange);
+  const i = g.turn, s = g.seats[i], stuck = !movesFor(g, host.hands[i] || []).length && !g.bone;
+  if (stuck && t > g.turnAt + CONFIG.passMs) return run(commit(passTurn(g, i)));
+  if ((s.b && t > g.turnAt + CONFIG.botMs * (g.drew ? 0.5 : 1)) || t > g.turnEnds) run(commit(botTurn(g, i), [i]));
+}
+function stopHosting() { if (!host.since) return; Object.assign(host, { ready: false, since: 0, busy: false, last: null, inbox: [] }); host.known.clear(); }
+
+// ── MY HAND ─────────────────────────────────────────────────────────────────────────
+const myHand = { key: "", r: -1, tiles: [] };
+/** My tiles: the host reads its own memory; everyone else opens their sealed box. */
+function readMyHand(g) {
+  const i = seatOf(g, net.sessionId);
+  if (isHost() && host.ready && i >= 0 && host.hands[i]) { myHand.r = g.id; myHand.tiles = host.hands[i]; myHand.key = ""; return; }
+  const raw = i >= 0 ? S.shared["hand" + i] : "", key = g.id + "|" + i + "|" + raw;
+  if (key === myHand.key) return;
+  myHand.key = key;
+  const h = parse(raw, null);
+  if (!h || h.id !== net.sessionId || h.r !== g.id) { if (myHand.r !== g.id || i < 0) { myHand.tiles = []; myHand.r = -1; } return; }
+  Seal.open(h.by, h.box).then((tiles) => { if (myHand.key === key && Array.isArray(tiles)) { myHand.tiles = tiles; myHand.r = g.id; } });
+}
+/** A new host hasn't taken the table yet: send it my hand, sealed so only it can read it. */
+let lastResend = 0;
+function resendHand(g, now) {
+  const hostId = livePlayers()[0], pk = pkOf(hostId);
+  if (hostId === net.sessionId || g.ph !== "play" || g.host === hostId || myHand.r !== g.id || seatOf(g, net.sessionId) < 0 || !pk || now - lastResend < 1500) return;
+  lastResend = now;
+  Seal.seal(pk, myHand.tiles).then((box) => { if (box) net.send("myhand", { to: hostId, r: g.id, box }); });
+}
+let waitT = "", waitAt = 0, picked = null, hideTile = null, hintUntil = performance.now() + 14000;
+const myTurn = (g) => g.ph === "play" && g.turn === seatOf(g, net.sessionId) && !(waitT === g.id + ":" + g.t && performance.now() - waitAt < 3000);
+const myMoves = (g) => (myHand.r === g.id ? movesFor(g, myHand.tiles) : []);
+/** Send an intent to the host (the host queues its own). */
+function act(type, data) {
+  const g = game();
+  if (!g) return;
+  const msg = { g: g.id, t: g.t, ...data };
+  waitT = g.id + ":" + g.t; waitAt = performance.now(); hintUntil = 0; picked = null;
+  if (isHost()) host.inbox.push({ type, from: net.sessionId, data: msg }); else net.send(type, msg);
+}
+/** Tap a tile in my hand: it fits one end, play it; it fits both, pick it and tap an end. */
+function tapTile(tile, at) {
+  const g = game();
+  if (!g || !myTurn(g)) return;
+  const moves = myMoves(g).filter((m) => same(m.tile, tile));
+  if (!moves.length) { shakeAt = { key: tkey(tile), t: performance.now() }; sound("nope"); return; }
+  if (moves.length === 1) return playMine(moves[0], at);
+  picked = picked && same(picked.tile, tile) ? null : { tile, at };
+}
+function playMine(m, at) {
+  flyFrom = { key: tkey(m.tile), x: at.x, y: at.y };
+  hideTile = { key: tkey(m.tile), n: myHand.tiles.length, at: performance.now() };
+  act("play", { tile: m.tile, end: m.end });
+}
+function tapBoneyard() { const g = game(); if (g && myTurn(g) && !myMoves(g).length && g.bone > 0) act("draw", {}); else if (g && myTurn(g) && myMoves(g).length) toast("You have a tile that fits"); }
+/** ?attract: my hand plays itself, like a bot. */
+function autopilot(g) {
+  if (!ATTRACT || !myTurn(g) || Date.now() < g.turnAt + 450 || myHand.r !== g.id) return;
+  const moves = myMoves(g);
+  if (!moves.length) { if (g.bone) act("draw", {}); return; }
+  const m = moves.sort((x, y) => pips(y.tile) - pips(x.tile))[0], r = handRects.find((h) => same(h.tile, m.tile));
+  playMine(m, r ? { x: r.x, y: r.y } : { x: W / 2, y: H - 80 });
+}
+
+// ── LINE LAYOUT ─────────────────────────────────────────────────────────────────────
+// Tiles are laid out in "units" (u = half a tile). The first tile played sits in the middle; the
+// right arm runs right and turns down at the edge, the left arm runs left and turns up. A tile on a
+// corner stands upright; a double sits crosswise. Each placed tile: {x, y (center), vert, a, b, i}
+// where a is the left (or top) number.
+function arm(list, x0, d, dy, half, out) {
+  let x = x0, y = 0, fresh = false;
+  for (const t of [...list, null]) { // null = the open end: where the next tile would go
+    const cross = t && t.near === t.far && !fresh, w = cross ? 1 : 2;
+    if (Math.abs(x + d * w) <= half) {
+      const spot = { x: x + (d * w) / 2, y, vert: cross };
+      if (!t) return spot;
+      out.push({ ...spot, a: d > 0 ? t.near : t.far, b: d > 0 ? t.far : t.near, i: t.i });
+      x += d * w; fresh = false;
+    } else { // the corner: stand this tile up in the next column, then run back the other way
+      const spot = { x: x + d / 2, y: y + dy / 2, vert: true };
+      if (!t) return spot;
+      out.push({ ...spot, a: dy > 0 ? t.near : t.far, b: dy > 0 ? t.far : t.near, i: t.i });
+      x += d; d = -d; y += dy * 2; fresh = true;
+    }
+  }
+}
+function lineLayout(line, root, half) {
+  const out = [];
+  if (!line.length) { const spot = { x: 0, y: 0, vert: false }; return { tiles: out, ends: { L: spot, R: spot } }; }
+  const r = line[root], dbl = r[0] === r[1];
+  out.push({ x: 0, y: 0, vert: dbl, a: r[0], b: r[1], i: root });
+  const right = line.slice(root + 1).map((t, k) => ({ near: t[0], far: t[1], i: root + 1 + k }));
+  const left = line.slice(0, root).reverse().map((t, k) => ({ near: t[1], far: t[0], i: root - 1 - k }));
+  return { tiles: out, ends: { R: arm(right, dbl ? 0.5 : 1, 1, 1, half, out), L: arm(left, dbl ? -0.5 : -1, -1, -1, half, out) } };
+}
+const boxOf = (p) => (p.vert ? { x0: p.x - 0.5, x1: p.x + 0.5, y0: p.y - 1, y1: p.y + 1 } : { x0: p.x - 1, x1: p.x + 1, y0: p.y - 0.5, y1: p.y + 0.5 });
+const lineMemo = { key: "", L: null, half: 0 };
+/** The line in screen pixels, fitted into `area`: tries every row width and keeps the one with the biggest
+ *  tiles (or the current one if it is nearly as good, so the line doesn't re-flow on every tile). */
+function placeLine(g, area) {
+  const key = JSON.stringify(g.line) + g.root + area.x + area.y + area.w + area.h;
+  if (lineMemo.key === key) return lineMemo.L;
+  let best = null, keep = null;
+  for (let half = 14; half >= 3; half--) {
+    const L = lineLayout(g.line, g.root, half), all = [...L.tiles, L.ends.L, L.ends.R].map(boxOf);
+    const x0 = Math.min(...all.map((b) => b.x0)), x1 = Math.max(...all.map((b) => b.x1)), y0 = Math.min(...all.map((b) => b.y0)), y1 = Math.max(...all.map((b) => b.y1));
+    const u = Math.min(area.w / (x1 - x0), area.h / (y1 - y0), Math.min(46, W / 10)), fit = { L, u, half, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+    if (!best || u > best.u + 0.01) best = fit;
+    if (half === lineMemo.half) keep = fit;
+  }
+  if (keep && keep.u >= best.u * 0.85) best = keep;
+  lineMemo.half = best.half;
+  const { L, u } = best, px = (p) => ({ ...p, x: area.x + area.w / 2 + (p.x - best.cx) * u, y: area.y + area.h / 2 + (p.y - best.cy) * u, u });
+  lineMemo.key = key; lineMemo.L = { tiles: L.tiles.map(px), ends: { L: px(L.ends.L), R: px(L.ends.R) }, u };
+  return lineMemo.L;
+}
+
+// ── SCREEN ──────────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const cv = $("table"), cx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, inset = { t: 0, b: 0 };
+function fit() {
+  DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  const st = getComputedStyle($("safe")); inset = { t: parseFloat(st.paddingTop) || 0, b: parseFloat(st.paddingBottom) || 0 };
+}
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+/** Screen regions: other seats along the top, my hand along the bottom, the line in between. */
+function regions(g) {
+  const mine = seatOf(g, net.sessionId), n = Math.max(1, myHand.r === g.id ? myHand.tiles.length : g.counts[mine] || 0);
+  const hw = mine < 0 ? 0 : Math.max(30, Math.min(54, (W - 24) / (Math.min(n, 9) * 1.12 + 0.2), H * 0.075));
+  const handY = H - inset.b - 24 - hw * 2 - (mine < 0 ? 0 : 8), top = inset.t + (ATTRACT ? 4 : 8);
+  const status = handY - (ATTRACT ? 8 : 28);
+  return { mine, hw, handY, top, status, area: { x: 14, y: top + 96, w: W - 28, h: Math.max(80, status - top - (ATTRACT ? 104 : 150)) }, bone: { x: W - 44, y: handY - 52 } };
+}
+/** Where each seat is on screen (my seat = my hand). The others sit along the top in turn order after me. */
+function seatSpots(g, R) {
+  const n = g.seats.length, mine = R.mine, order = mine >= 0 ? Array.from({ length: n - 1 }, (_, k) => (mine + 1 + k) % n) : [...g.seats.keys()];
+  const gap = Math.min(150, W / order.length), x0 = W / 2 - (gap * (order.length - 1)) / 2, spots = [];
+  order.forEach((i, k) => { spots[i] = { x: x0 + k * gap, y: R.top + 30 }; });
+  if (mine >= 0) spots[mine] = { x: W / 2, y: R.handY + R.hw };
+  return spots;
+}
+const PIPS = { 0: [], 1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]], 4: [[-1, -1], [1, -1], [-1, 1], [1, 1]], 5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]], 6: [[-1, -1], [0, -1], [1, -1], [-1, 1], [0, 1], [1, 1]] };
+const PIP_COLORS = ["#333", "#d6336c", "#2b8a3e", "#1864ab", "#d9480f", "#7048e8", "#0b7285"];
+function roundRect(x, y, w, h, r) { cx.beginPath(); cx.roundRect ? cx.roundRect(x, y, w, h, r) : cx.rect(x, y, w, h); }
+/** One tile, lying flat (a on the left, b on the right), turned by `ang`. a < 0 = face down. */
+function drawTile(x, y, u, ang, a, b, style = "") {
+  cx.save(); cx.translate(x, y); cx.rotate(ang);
+  if (style === "dim") cx.globalAlpha = 0.55;
+  cx.shadowColor = "#0007"; cx.shadowBlur = u * 0.25; cx.shadowOffsetY = u * 0.08;
+  roundRect(-u, -u / 2, u * 2, u, u * 0.16);
+  if (a < 0) { const bk = cx.createLinearGradient(0, -u / 2, 0, u / 2); bk.addColorStop(0, "#2f4f7a"); bk.addColorStop(1, "#1d3352"); cx.fillStyle = bk; cx.fill(); cx.shadowColor = "transparent"; cx.strokeStyle = "#ffffff30"; cx.lineWidth = 1; cx.stroke(); cx.fillStyle = "#ffd16699"; cx.beginPath(); cx.arc(0, 0, u * 0.12, 0, Math.PI * 2); cx.fill(); cx.restore(); return; }
+  const body = cx.createLinearGradient(0, -u / 2, 0, u / 2); body.addColorStop(0, "#fffdf6"); body.addColorStop(1, "#e9dfc8");
+  cx.fillStyle = body; cx.fill(); cx.shadowColor = "transparent";
+  cx.lineWidth = style === "glow" ? 3 : 1; cx.strokeStyle = style === "glow" ? "#ffd166" : style === "new" ? "#ff8a65" : "#a8977a"; cx.stroke();
+  cx.strokeStyle = "#a8977a"; cx.lineWidth = Math.max(1, u * 0.04); cx.beginPath(); cx.moveTo(0, -u * 0.36); cx.lineTo(0, u * 0.36); cx.stroke();
+  for (const [v, ox] of [[a, -u / 2], [b, u / 2]]) {
+    cx.fillStyle = PIP_COLORS[v] || "#333";
+    for (const [px, py] of PIPS[v] || []) { cx.beginPath(); cx.arc(ox + px * u * 0.24, py * u * 0.24, u * 0.085, 0, Math.PI * 2); cx.fill(); }
+  }
+  cx.restore();
+}
+// Tiles on the table glide to their spot (new ones fly in from whoever played them).
+const shown = new Map(), flies = [], parts = [], pops = [];
+let flyFrom = null, snapLine = true, shakeAt = null;
+function drawLine(g, R, now, dt) {
+  const L = placeLine(g, R.area), k = 1 - Math.exp(-dt * 11), keys = new Set();
+  for (const p of L.tiles) {
+    const t = g.line[p.i], key = tkey(t), ang = p.vert ? Math.PI / 2 : 0;
+    keys.add(key);
+    let s = shown.get(key);
+    if (!s || snapLine) { const from = !snapLine && flyFrom && flyFrom.key === key ? flyFrom : !snapLine ? spawnAt.get(key) : null; s = { x: from ? from.x : p.x, y: from ? from.y : p.y, u: p.u, ang: from ? Math.PI / 2 : ang, born: now }; shown.set(key, s); }
+    s.x += (p.x - s.x) * k; s.y += (p.y - s.y) * k; s.u += (p.u - s.u) * k; s.ang += (ang - s.ang) * k;
+    const isLast = g.last && g.last.a === "play" && same(g.last.tile, t);
+    drawTile(s.x, s.y, s.u, s.ang, p.a, p.b, isLast && now - s.born < 2500 ? "new" : "");
+  }
+  for (const key of [...shown.keys()]) if (!keys.has(key)) shown.delete(key);
+  snapLine = false;
+  // where my picked tile can go: both ends glow, tap one
+  if (picked && myTurn(g)) {
+    for (const end of ["L", "R"]) {
+      if (!myMoves(g).some((m) => same(m.tile, picked.tile) && m.end === end)) continue;
+      const e = L.ends[end], u = L.u, pulse = 0.5 + 0.5 * Math.sin(now / 160);
+      cx.save(); cx.translate(e.x, e.y); cx.rotate(e.vert ? Math.PI / 2 : 0);
+      cx.setLineDash([6, 5]); cx.lineWidth = 3; cx.strokeStyle = `rgba(255,209,102,${0.5 + pulse * 0.5})`; cx.fillStyle = "#ffd16626";
+      roundRect(-u, -u / 2, u * 2, u, u * 0.16); cx.fill(); cx.stroke(); cx.restore();
+    }
+  }
+}
+function drawSeat(g, i, p, now) {
+  const s = g.seats[i], turn = g.ph === "play" && g.turn === i, r = 22, col = seatColor(s);
+  if (turn) { // the ring is the turn timer
+    const left = Math.max(0, Math.min(1, (g.turnEnds - Date.now()) / CONFIG.turnMs));
+    cx.strokeStyle = "#ffffff26"; cx.lineWidth = 4; cx.beginPath(); cx.arc(p.x, p.y, r + 5, 0, Math.PI * 2); cx.stroke();
+    cx.strokeStyle = "#fff"; cx.beginPath(); cx.arc(p.x, p.y, r + 5, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2); cx.stroke();
+  }
+  cx.fillStyle = col; cx.beginPath(); cx.arc(p.x, p.y + (turn ? Math.sin(now / 200) * 1.5 : 0), r, 0, Math.PI * 2); cx.fill();
+  cx.fillStyle = "#14161f"; cx.font = "800 18px system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "middle";
+  cx.fillText((seatName(s)[0] || "?").toUpperCase(), p.x, p.y + 1);
+  cx.fillStyle = "#fff8ec"; cx.font = "700 12px system-ui, sans-serif";
+  let name = seatName(s) + (s.b ? " 🤖" : "");
+  while (name.length > 4 && cx.measureText(name).width > 104) name = name.slice(0, -3) + "…";
+  cx.fillText(name, p.x, p.y + r + 12);
+  cx.fillStyle = "#ffd166"; cx.font = "800 12px system-ui, sans-serif";
+  cx.fillText(`${g.scores[i]} pts`, p.x, p.y + r + 27);
+  const n = g.counts[i], m = Math.min(n, 7); // a fan of tile backs and the count
+  for (let k = 0; k < m; k++) drawTile(p.x + r + 12 + k * 4, p.y - 6 + k * 0.5, 7, Math.PI / 2, -1, -1);
+  cx.fillStyle = "#fff"; cx.font = "800 11px system-ui, sans-serif"; cx.fillText(String(n), p.x + r + 16 + m * 4, p.y + 12);
+}
+let handRects = [];
+function drawHand(g, R, now) {
+  handRects = [];
+  if (R.mine < 0) return;
+  if (hideTile && (myHand.tiles.length !== hideTile.n || performance.now() - hideTile.at > 3000)) hideTile = null;
+  const tiles = (myHand.r === g.id ? myHand.tiles : []).filter((t) => !hideTile || tkey(t) !== hideTile.key).slice().sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const n = tiles.length, hw = R.hw, room = W - 24 - hw, stepX = n > 1 ? Math.min(hw * 1.14, room / (n - 1)) : 0, x0 = W / 2 - ((n - 1) * stepX) / 2;
+  const mine = myTurn(g), moves = mine ? myMoves(g) : [];
+  tiles.forEach((t, k) => {
+    const ok = moves.some((m) => same(m.tile, t)), sel = picked && same(picked.tile, t), shake = shakeAt && shakeAt.key === tkey(t) && now - shakeAt.t < 350;
+    const x = x0 + k * stepX + (shake ? Math.sin(now / 25) * 4 : 0), y = R.handY + hw - (sel ? 18 : ok ? 10 : 0);
+    drawTile(x, y, hw, Math.PI / 2, t[0], t[1], ok ? "glow" : mine ? "dim" : "");
+    handRects.push({ tile: t, x, y, w: hw, h: hw * 2 });
+  });
+  // my name and score, bottom left above the hand
+  const s = g.seats[R.mine];
+  cx.fillStyle = seatColor(s); cx.beginPath(); cx.arc(24, R.handY - 46, 9, 0, Math.PI * 2); cx.fill();
+  cx.fillStyle = "#fff8ec"; cx.font = "700 13px system-ui, sans-serif"; cx.textAlign = "left"; cx.textBaseline = "middle";
+  cx.fillText("You", 38, R.handY - 52); cx.fillStyle = "#ffd166"; cx.font = "800 12px system-ui, sans-serif"; cx.fillText(`${g.scores[R.mine]} pts`, 38, R.handY - 38);
+}
+function drawBoneyard(g, R, now) {
+  const b = R.bone, can = myTurn(g) && !myMoves(g).length && g.bone > 0;
+  if (can) { cx.fillStyle = `rgba(255,209,102,${0.18 + 0.12 * Math.sin(now / 150)})`; cx.beginPath(); cx.arc(b.x, b.y, 34, 0, Math.PI * 2); cx.fill(); }
+  for (let k = 0; k < Math.min(3, g.bone); k++) drawTile(b.x - 2 + k * 2, b.y + 6 - k * 4, 13, 0, -1, -1);
+  cx.fillStyle = can ? "#ffd166" : "#fff8ecaa"; cx.font = "800 11px system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "middle";
+  cx.fillText(g.bone ? (can ? `Draw (${g.bone})` : `Boneyard ${g.bone}`) : "Empty", b.x, b.y + 26);
+}
+function popText(text, x, y, color, big) { pops.push({ text, x, y, color, big, t0: performance.now() }); }
+function confetti(x, y) { for (let k = 0; k < 90; k++) parts.push({ x, y, vx: (Math.random() - 0.5) * 520, vy: -200 - Math.random() * 420, c: ["#ff8a65", "#ffd54f", "#81c784", "#4fc3f7", "#fff"][k % 5], r: Math.random() * 6, life: 1.6 }); }
+function sparks(x, y) { for (let k = 0; k < 14; k++) { const a = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 140; parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, c: "#fff3c4", r: 0, life: 0.45, dot: true }); } }
+function drawFx(dt, now) {
+  for (let i = flies.length - 1; i >= 0; i--) { // tile backs flying from the boneyard to a seat
+    const f = flies[i], k = Math.min(1, Math.max(0, (now - f.t0) / 420));
+    if (k >= 1) { flies.splice(i, 1); continue; }
+    const e = 1 - (1 - k) ** 3;
+    drawTile(f.a.x + (f.b.x - f.a.x) * e, f.a.y + (f.b.y - f.a.y) * e - Math.sin(k * Math.PI) * 40, 14, k * Math.PI, -1, -1);
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life -= dt;
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+    p.vy += (p.dot ? 0 : 900) * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.r += dt * 8;
+    cx.globalAlpha = Math.min(1, p.life * 2); cx.fillStyle = p.c;
+    if (p.dot) { cx.beginPath(); cx.arc(p.x, p.y, 2.2, 0, Math.PI * 2); cx.fill(); }
+    else { cx.save(); cx.translate(p.x, p.y); cx.rotate(p.r); cx.fillRect(-4, -2.5, 8, 5); cx.restore(); }
+  }
+  cx.globalAlpha = 1;
+  for (let i = pops.length - 1; i >= 0; i--) {
+    const p = pops[i], k = (now - p.t0) / 1200;
+    if (k >= 1) { pops.splice(i, 1); continue; }
+    const sc = k < 0.15 ? 0.5 + (k / 0.15) * 0.7 : 1.2 - Math.min(0.2, (k - 0.15) * 0.8);
+    cx.save(); cx.translate(p.x, p.y - k * 30); cx.scale(sc, sc); cx.globalAlpha = k > 0.7 ? (1 - k) / 0.3 : 1;
+    cx.font = `900 ${p.big ? 30 : 20}px system-ui, sans-serif`; cx.textAlign = "center"; cx.textBaseline = "middle";
+    cx.lineWidth = 5; cx.strokeStyle = "#000a"; cx.strokeText(p.text, 0, 0); cx.fillStyle = p.color; cx.fillText(p.text, 0, 0);
+    cx.restore();
+  }
+}
+let seenT = "";
+const spawnAt = new Map();
+/** When an action lands in state: a tile flies in, a pop names it, a sound plays. */
+function effects(g, R, spots) {
+  const key = g.id + ":" + g.t;
+  if (key === seenT) return;
+  const first = !seenT, newRound = seenT.split(":")[0] !== String(g.id);
+  seenT = key;
+  if (first || newRound) { snapLine = true; picked = null; if (!first) sound("deal"); if (first) return; }
+  const L = g.last;
+  if (!L || L.t !== g.t) return;
+  const at = spots[L.s] || { x: W / 2, y: H / 2 };
+  if (L.a === "play") {
+    spawnAt.set(tkey(L.tile), at);
+    const P = placeLine(g, R.area), spot = P.tiles.find((p) => same(g.line[p.i], L.tile));
+    setTimeout(() => { if (spot) sparks(spot.x, spot.y); }, 260);
+    if (L.tile[0] === L.tile[1] && spot) popText("Double!", spot.x, spot.y - P.u * 1.4, "#ffd166", false);
+    sound("clack");
+  } else if (L.a === "draw") { flies.push({ a: R.bone, b: at, t0: performance.now() }); sound("draw"); }
+  else if (L.a === "pass") { popText("Pass", at.x, at.y + 4, "#fff8ec", false); sound("nope"); }
+  if (g.ph === "over") {
+    if (g.winner >= 0) { setTimeout(() => { confetti(at.x, at.y); popText(`+${g.pts}`, at.x, at.y < H / 2 ? at.y + 62 : at.y - 30, "#ffd166", true); }, 350); sound("win"); }
+    else popText("Blocked!", W / 2, R.area.y + R.area.h / 2, "#fff8ec", true);
+  }
+}
+let actx = null, noise = null; // sounds start after the first tap (browsers require it)
+addEventListener("pointerdown", () => { if (!actx) try { actx = new AudioContext(); } catch {} });
+function sound(kind) {
+  if (!actx || ATTRACT) return;
+  const t = actx.currentTime, gn = actx.createGain();
+  gn.connect(actx.destination);
+  if (kind === "clack" || kind === "draw" || kind === "deal") {
+    if (!noise) { noise = actx.createBuffer(1, actx.sampleRate / 4, actx.sampleRate); const d = noise.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / 300); }
+    const src = actx.createBufferSource(), f = actx.createBiquadFilter();
+    src.buffer = noise; f.type = "bandpass"; f.frequency.value = kind === "clack" ? 2400 : 1500; f.Q.value = 2;
+    gn.gain.value = kind === "clack" ? 0.9 : 0.4; src.connect(f).connect(gn); src.start(t); return;
+  }
+  const o = actx.createOscillator();
+  o.type = "triangle"; o.frequency.setValueAtTime(kind === "win" ? 523 : 200, t);
+  if (kind === "win") { o.frequency.setValueAtTime(659, t + 0.12); o.frequency.setValueAtTime(784, t + 0.24); }
+  gn.gain.setValueAtTime(0.16, t); gn.gain.exponentialRampToValueAtTime(0.001, t + (kind === "win" ? 0.5 : 0.18));
+  o.connect(gn); o.start(t); o.stop(t + 0.55);
+}
+function draw(g, R, spots, now, dt) {
+  cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const felt = cx.createRadialGradient(W / 2, H * 0.45, 40, W / 2, H * 0.45, Math.max(W, H) * 0.75);
+  felt.addColorStop(0, "#2e7a55"); felt.addColorStop(1, "#0d2a1e");
+  cx.fillStyle = felt; cx.fillRect(0, 0, W, H);
+  cx.strokeStyle = "#ffffff10"; cx.lineWidth = 2; roundRect(R.area.x - 4, R.area.y - 6, R.area.w + 8, R.area.h + 12, 22); cx.stroke();
+  if (!g.line.length && g.ph === "play") { cx.fillStyle = "#ffffff30"; cx.font = "700 15px system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "middle"; cx.fillText("The first tile can be any tile", R.area.x + R.area.w / 2, R.area.y + R.area.h / 2); }
+  drawLine(g, R, now, dt);
+  g.seats.forEach((_, i) => { if (i !== R.mine) drawSeat(g, i, spots[i], now); });
+  drawBoneyard(g, R, now);
+  drawHand(g, R, now);
+  drawFx(dt, now);
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+let toastAt = 0, dropped = false, board = null, resultsFor = -1, closedFor = -1, seatsSeen = null;
+function toast(text) { $("toast").textContent = text; $("toast").style.opacity = 1; toastAt = performance.now(); }
+function hud(g, R) {
+  if (performance.now() - toastAt > 2400) $("toast").style.opacity = 0;
+  const n = livePlayers().length;
+  $("net").textContent = ATTRACT ? "" : net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the table" : ""}`;
+  if (ATTRACT) { $("status").classList.add("hide"); $("over").hidden = $("back").hidden = true; return; }
+  const prev = seatsSeen; seatsSeen = { id: g.id, s: g.seats.map((s) => s.i) }; // someone took over from a bot, or a bot took over
+  if (prev && prev.id === g.id) g.seats.forEach((s, i) => { if (prev.s[i] !== s.i && s.i === net.sessionId) toast("You took over a seat"); else if (prev.s[i] !== s.i && s.b) toast(`${s.n} took over a seat`); });
+  const mine = R.mine, s = g.seats[g.turn], moves = myTurn(g) ? myMoves(g) : [];
+  let text, sub = "";
+  if (g.ph === "over") text = g.winner < 0 ? "Blocked! Nobody scores" : g.winner === mine ? `You win the round! +${g.pts}` : `${seatName(g.seats[g.winner])} wins the round · +${g.pts}`;
+  else if (mine < 0) { text = `${seatName(s)}${s.b ? " is thinking…" : "'s turn"}`; sub = "You're watching · you'll get a seat soon"; }
+  else if (g.turn === mine) {
+    text = moves.length ? (picked ? "Tap an end to play it" : "Your turn") : g.bone ? "No match: draw a tile" : "No moves: passing";
+    sub = performance.now() < hintUntil ? "Match a number at either end of the line" : moves.length ? `${moves.length} move${moves.length === 1 ? "" : "s"} · first to ${CONFIG.target} wins` : g.bone ? "Tap the boneyard" : "";
+  } else { text = `${seatName(s)}${s.b ? " is thinking…" : "'s turn"}`; sub = `First to ${CONFIG.target} points wins`; }
+  if ($("statusText").textContent !== text) $("statusText").textContent = text;
+  if ($("sub").textContent !== sub) $("sub").textContent = sub;
+  $("status").style.bottom = Math.round(H - R.status) + "px";
+  $("timer").style.visibility = g.ph === "play" && g.turn === mine ? "visible" : "hidden";
+  $("timer").firstElementChild.style.transform = `scaleX(${Math.max(0, Math.min(1, (g.turnEnds - Date.now()) / CONFIG.turnMs))})`;
+  results(g, mine);
+}
+function results(g, mine) {
+  const show = g.ph === "over" && closedFor !== g.id;
+  $("over").hidden = !show; $("back").hidden = !(g.ph === "over" && closedFor === g.id);
+  if (!show || resultsFor === g.id) return;
+  resultsFor = g.id;
+  const won = mine >= 0 && g.winner === mine, champ = g.matchOver ? g.winner : -1;
+  $("overTitle").textContent = g.matchOver ? (won ? "You win the match!" : `${seatName(g.seats[champ])} wins the match`) : g.winner < 0 ? "Blocked!" : won ? "You win the round!" : `${seatName(g.seats[g.winner])} wins the round`;
+  $("overSub").textContent = g.winner < 0 ? "Nobody can play and the lowest hands tie: no points." : `+${g.pts} points from the tiles left in the other hands${g.blocked ? " (the line was blocked; lowest hand wins)" : ""}.`;
+  const order = g.seats.map((_, i) => i).sort((a, b) => g.scores[b] - g.scores[a]);
+  $("scores").innerHTML = order.map((i) => { const s = g.seats[i], left = g.reveal ? handPips(g.reveal[i]) : 0;
+    return `<div class="row"><i style="background:${esc(seatColor(s))}"></i><span>${esc(i === mine ? "You" : seatName(s))}${s.b ? " 🤖" : ""} <small>${i === g.winner ? "went out" : left + " pips left"}</small></span><span></span><b>${g.scores[i]}</b>` +
+      `<div class="bar"><u style="width:${Math.min(100, (100 * g.scores[i]) / CONFIG.target)}%"></u></div></div>`; }).join("");
+  $("next").textContent = g.matchOver ? "Play again" : "Next round";
+  $("next").hidden = mine < 0;
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  (won && g.pts > 0 ? board.submit(g.pts, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No points yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+$("next").onclick = () => { const g = game(); if (g && g.ph === "over") act("next", {}); };
+$("look").onclick = () => { closedFor = game()?.id ?? -1; };
+$("back").onclick = () => { closedFor = -1; };
+
+// ── INPUT / LOOP ────────────────────────────────────────────────────────────────────
+let lastR = null;
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const g = game(), R = lastR;
+  if (!g || !R) return;
+  const x = e.clientX, y = e.clientY;
+  for (let k = handRects.length - 1; k >= 0; k--) { // top-most tile first
+    const h = handRects[k];
+    if (Math.abs(x - h.x) < h.w / 2 + 2 && Math.abs(y - h.y) < h.h / 2 + 4) return tapTile(h.tile, h);
+  }
+  if (picked && myTurn(g)) { // tap an end to play the picked tile there
+    const L = placeLine(g, R.area);
+    for (const end of ["L", "R"]) {
+      const p = L.ends[end], m = myMoves(g).find((mv) => same(mv.tile, picked.tile) && mv.end === end);
+      if (m && Math.hypot(x - p.x, y - p.y) < L.u * 1.4 + 10) return playMine(m, picked.at);
+    }
+  }
+  if (Math.hypot(x - R.bone.x, y - R.bone.y) < 40) return tapBoneyard();
+  picked = null;
+});
+// Keys: 1-9 play that tile of my hand (left to right), D draws.
+addEventListener("keydown", (e) => {
+  const g = game();
+  if (!g) return;
+  if (e.key === "d" || e.key === "D") return tapBoneyard();
+  const k = parseInt(e.key, 10);
+  if (k >= 1 && handRects[k - 1]) tapTile(handRects[k - 1].tile, handRects[k - 1]);
+});
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+function fixColor() {
+  const g = game(), others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
+  const botColors = g ? g.seats.filter((s) => s.b).map((s) => s.c) : [];
+  if (!others.some(([id, p]) => p.c === myColor && id < net.sessionId) && !botColors.includes(myColor)) return;
+  const taken = new Set([...others.map(([, p]) => p.c), ...botColors]), free = COLORS.find((c) => !taken.has(c));
+  if (free) { myColor = free; net.me.set("c", free); }
+}
+
+let myName = "", myColor = COLORS[0], last = performance.now(), lastHb = 0, lastHud = 0;
+try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
+const pickOne = (list) => list[Math.floor(Math.random() * list.length)];
+if (!myName) { myName = pickOne(NAME_A) + " " + pickOne(NAME_B); try { localStorage.setItem("mpa-name", myName); } catch {} }
+if (ATTRACT) { Object.assign(CONFIG, { botMs: 480, passMs: 400, turnMs: 4000, resultsMs: 1800, matchResultsMs: 1800 }); $("net").textContent = ""; }
+
+function frame(now) {
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
+  if (isHost()) hostTick(now); else stopHosting();
+  const g = game();
+  if (g) {
+    readMyHand(g); resendHand(g, now);
+    const R = (lastR = regions(g)), spots = seatSpots(g, R);
+    if (picked && (!myTurn(g) || !myHand.tiles.some((t) => same(t, picked.tile)))) picked = null;
+    effects(g, R, spots);
+    draw(g, R, spots, now, dt);
+    autopilot(g);
+    if (now - lastHud > 100) { lastHud = now; hud(g, R); }
+  } else { cx.setTransform(DPR, 0, 0, DPR, 0, 0); cx.fillStyle = "#0f2a1f"; cx.fillRect(0, 0, W, H); }
+  requestAnimationFrame(frame);
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; });
+  for (const type of ["play", "draw", "next"]) net.on(type, (data, from) => { if (isHost() && data) host.inbox.push({ type, from, data }); });
+  net.on("myhand", (d, from) => { // a player re-sending its hand to me, the new host
+    const g = game(), i = g && d ? seatOf(g, from) : -1;
+    if (i < 0 || d.to !== net.sessionId || d.r !== g.id || host.ready) return;
+    Seal.open(pkOf(from), d.box).then((tiles) => { if (Array.isArray(tiles)) host.known.set(i, tiles); });
+  });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  myColor = COLORS.find((c) => !taken.has(c)) || pickOne(COLORS);
+  const pk = await Seal.init().catch(() => "");
+  net.me.set({ n: myName, c: myColor, pk, hb: Date.now() });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
