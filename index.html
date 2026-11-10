@@ -809,6 +809,7 @@ if (!myName) { myName = pickOne(NAME_A) + " " + pickOne(NAME_B); try { localStor
 if (ATTRACT) { Object.assign(CONFIG, { botMs: 480, passMs: 400, turnMs: 4000, resultsMs: 1800, matchResultsMs: 1800 }); $("net").textContent = ""; }
 
 function frame(now) {
+  requestAnimationFrame(frame);
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
   if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
   if (isHost()) hostTick(now); else stopHosting();
@@ -822,7 +823,6 @@ function frame(now) {
     autopilot(g);
     if (now - lastHud > 100) { lastHud = now; hud(g, R); }
   } else { cx.setTransform(DPR, 0, 0, DPR, 0, 0); cx.fillStyle = "#0f2a1f"; cx.fillRect(0, 0, W, H); }
-  requestAnimationFrame(frame);
 }
 
 (async function start() {
