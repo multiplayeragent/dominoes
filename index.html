@@ -25,12 +25,14 @@
   .box h2 { margin: 0 0 4px; font-size: 26px; } .box p { margin: 0 0 10px; opacity: .85; }
   .box h3 { margin: 8px 0 4px; font-size: 13px; color: var(--gold); text-align: left; }
   .box ol { text-align: left; margin: 0 0 10px; padding-left: 24px; font-size: 14px; min-height: 24px; } .box li span { float: right; }
+  .box li.note { list-style: none; margin-left: -24px; opacity: .8; } /* a status line, not a numbered entry */
   .row { display: grid; grid-template-columns: 14px 1fr auto 46px; gap: 8px; align-items: center; text-align: left; font-size: 14px; padding: 4px 0; }
   .row i { width: 12px; height: 12px; border-radius: 50%; } .row b { text-align: right; } .row small { opacity: .7; }
   .bar { grid-column: 2 / 5; height: 5px; border-radius: 3px; background: #ffffff1c; overflow: hidden; margin-top: -2px; } .bar u { display: block; height: 100%; background: var(--gold); }
   button { min-height: 48px; border-radius: 12px; border: 0; font: 800 16px system-ui, sans-serif; cursor: pointer; }
   .box button { width: 100%; margin-top: 8px; background: var(--gold); color: #2a1d00; }
   .box button.ghost { background: #ffffff1a; color: #fff; }
+  .box button:disabled { opacity: .55; cursor: default; }
   #back { position: fixed; right: max(12px, env(safe-area-inset-right)); top: calc(max(8px, env(safe-area-inset-top)) + 96px); min-width: 120px; background: var(--gold); color: #2a1d00; z-index: 5; }
   .hide { display: none !important; }
 </style>
@@ -46,7 +48,7 @@
 <div id="over" hidden><div class="box">
   <h2 id="overTitle"></h2><p id="overSub"></p>
   <div id="scores"></div>
-  <h3>Most points</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Most points</h3><ol id="board"><li class="note">Loading…</li></ol>
   <button id="next">Next round</button><button id="look" class="ghost">Look at the table</button>
 </div></div>
 <script>
@@ -71,13 +73,13 @@
  * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
  *   - The table lives in shared fields only the HOST writes: `game` (one JSON field: id, v,
  *     match, ph "play"|"over", host, seats, scores, counts, bone, line, root, turn, starter, t,
- *     passes, drew, turnAt, turnEnds, last, winner, pts, blocked, matchOver, endsAt, reveal) and
+ *     passes, drew, turnAt, turnEnds, last, winner, pts, blocked, matchOver, endsAt, reveal, ready) and
  *     `hand0`…`hand3` (each human's hand, SEALED to that player's public key, so only they can
  *     read it; the host deals, so it can too).
  *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s).
  *     It holds the boneyard and the bots' hands in its own memory.
  *   - Each player writes its OWN entity: `n` (name), `c` (color), `pk` (public key), `hb`.
- *   - Players send intents to the host: "play" {g, t, tile, end}, "draw" {g, t}, "next" {g}.
+ *   - Players send intents to the host: "play" {g, t, tile, end}, "draw" {g, t}, "next" {g} (the next round deals when every seated human is ready).
  *     `t` counts every action, so an old or double intent is ignored. Passing is automatic.
  *   - When the host changes, every player re-sends its own hand sealed to the new host
  *     ("myhand" {to, r, box}). The new host rebuilds the boneyard from the tiles nobody holds,
@@ -302,7 +304,7 @@ function endRound(out, winner, blocked) {
   const pts = winner < 0 ? 0 : host.hands.reduce((s, h, k) => (k === winner ? s : s + handPips(h)), 0);
   const scores = out.scores.slice(); if (winner >= 0) scores[winner] += pts;
   const matchOver = winner >= 0 && scores[winner] >= CONFIG.target;
-  return { ...out, ph: "over", winner, pts, blocked, scores, matchOver, reveal: host.hands.map((h) => h.slice()), endsAt: Date.now() + (matchOver ? CONFIG.matchResultsMs : CONFIG.resultsMs) };
+  return { ...out, ph: "over", winner, pts, blocked, scores, matchOver, ready: out.seats.map(() => 0), reveal:host.hands.map((h) => h.slice()), endsAt: Date.now() + (matchOver ? CONFIG.matchResultsMs : CONFIG.resultsMs) };
 }
 /** Play a tile on an end: it turns to match, an empty hand wins the round. Returns the new game, or null if refused. */
 function playTile(g, i, tile, end) {
@@ -351,7 +353,11 @@ function handle({ type, from, data: d }) {
   const g = game();
   if (!g || !d || d.g !== g.id) return;
   const i = seatOf(g, from);
-  if (type === "next") return g.ph === "over" && i >= 0 ? deal(g) : undefined;
+  if (type === "next") { // the next round deals once every seated human has pressed Next (or at endsAt)
+    if (g.ph !== "over" || i < 0 || g.ready?.[i]) return;
+    const ready = (g.ready || g.seats.map(() => 0)).slice(); ready[i] = 1;
+    return g.seats.every((s, k) => s.b || ready[k]) ? deal(g) : commit({ ...g, ready });
+  }
   if (g.ph !== "play" || i !== g.turn || d.t !== g.t) return;
   if (type === "play" && Array.isArray(d.tile)) return commit(playTile(g, i, d.tile.map(Number), d.end === "L" ? "L" : "R"), [i]);
   if (type === "draw" && !movesFor(g, host.hands[i]).length) return commit(takeFromBoneyard(g, i), [i]);
@@ -742,6 +748,11 @@ function hud(g, R) {
 function results(g, mine) {
   const show = g.ph === "over" && closedFor !== g.id;
   $("over").hidden = !show; $("back").hidden = !(g.ph === "over" && closedFor === g.id);
+  if (show) { // pressed Next: wait for the other players
+    const waiting = mine >= 0 && !!g.ready?.[mine], nextText = waiting ? "Waiting for the others…" : g.matchOver ? "Play again" : "Next round";
+    $("next").disabled = waiting;
+    if ($("next").textContent !== nextText) $("next").textContent = nextText;
+  }
   if (!show || resultsFor === g.id) return;
   resultsFor = g.id;
   const won = mine >= 0 && g.winner === mine, champ = g.matchOver ? g.winner : -1;
@@ -751,14 +762,13 @@ function results(g, mine) {
   $("scores").innerHTML = order.map((i) => { const s = g.seats[i], left = g.reveal ? handPips(g.reveal[i]) : 0;
     return `<div class="row"><i style="background:${esc(seatColor(s))}"></i><span>${esc(i === mine ? "You" : seatName(s))}${s.b ? " 🤖" : ""} <small>${i === g.winner ? "went out" : left + " pips left"}</small></span><span></span><b>${g.scores[i]}</b>` +
       `<div class="bar"><u style="width:${Math.min(100, (100 * g.scores[i]) / CONFIG.target)}%"></u></div></div>`; }).join("");
-  $("next").textContent = g.matchOver ? "Play again" : "Next round";
   $("next").hidden = mine < 0;
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = "<li class=\"note\">Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li class=\"note\">Loading…</li>";
   (won && g.pts > 0 ? board.submit(g.pts, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No points yet. Be the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li class=\"note\">No points yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li class=\"note\">Couldn't load the leaderboard.</li>"; });
 }
 $("next").onclick = () => { const g = game(); if (g && g.ph === "over") act("next", {}); };
 $("look").onclick = () => { closedFor = game()?.id ?? -1; };
@@ -769,7 +779,7 @@ let lastR = null;
 cv.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   const g = game(), R = lastR;
-  if (!g || !R) return;
+  if (!g || !R || e.button) return; // left click or a tap; a right click plays nothing
   const x = e.clientX, y = e.clientY;
   for (let k = handRects.length - 1; k >= 0; k--) { // top-most tile first
     const h = handRects[k];
@@ -794,6 +804,7 @@ addEventListener("keydown", (e) => {
   if (k >= 1 && handRects[k - 1]) tapTile(handRects[k - 1].tile, handRects[k - 1]);
 });
 document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+cv.addEventListener("contextmenu", (e) => e.preventDefault()); // no browser menu on the table
 
 function fixColor() {
   const g = game(), others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
