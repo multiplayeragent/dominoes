@@ -380,8 +380,13 @@ function adoptTable(g, now) {
   if (mine >= 0 && myHand.r === g.id) host.known.set(mine, myHand.tiles.slice());
   const missing = g.seats.some((s, i) => !s.b && stillHere(s.i) && !host.known.has(i));
   if (missing && now - host.since < CONFIG.rejoinMs) return;
-  const held = g.seats.map((s, i) => { const h = host.known.get(i); return h && h.length === g.counts[i] ? h.slice() : null; });
-  host.bone = shuffle(without(without(allTiles(), held.filter(Boolean).flat()), g.line));
+  let pool = without(allTiles(), g.line); // a re-sent hand only counts if its tiles are real, distinct, and nobody else's
+  const held = g.seats.map((s, i) => {
+    const h = host.known.get(i), ok = Array.isArray(h) && h.length === g.counts[i] && h.every((t) => Array.isArray(t) && pool.some((x) => same(x, t))) && new Set(h.map(tkey)).size === h.length;
+    if (!ok) return null;
+    const tiles = h.map((t) => pool.find((x) => same(x, t)).slice()); pool = without(pool, tiles); return tiles;
+  });
+  host.bone = shuffle(pool);
   host.hands = held.map((h, i) => h || host.bone.splice(-g.counts[i])); // bots (and anyone silent) get fresh tiles
   host.ready = true; host.known.clear(); host.busy = true;
   const resealed = g.seats.map((s, i) => (!s.b && !held[i] ? i : -1)).filter((i) => i >= 0);
